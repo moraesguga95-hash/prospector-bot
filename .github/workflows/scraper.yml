@@ -1,0 +1,28 @@
+name: Prospector Bot Cloud
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: 'O que buscar? (Ex: Dentistas em SP)'
+        required: true
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Install browser
+        run: npx puppeteer browsers install chrome
+
+      - name: Run Scraper
+        run: node -e "const { scrapeGoogleMaps } = require('./scraper.cjs'); scrapeGoogleMaps('${{ github.event.inputs.query }}')"
