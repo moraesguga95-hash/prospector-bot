@@ -6,69 +6,88 @@ const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function scrapeGoogleMaps(query) {
-  console.log(`📡 Iniciando varredura: ${query}`);
+  console.log(`📡 Operação "God Mode" iniciada: ${query}`);
   
   const browser = await puppeteer.launch({ 
     headless: "new", 
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] 
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
   });
   
   const page = await browser.newPage();
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+  await page.setViewport({ width: 1280, height: 800 });
 
   try {
-    await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, { waitUntil: 'networkidle2', timeout: 30000 });
-    await new Promise(r => setTimeout(r, 4000));
+    await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, { waitUntil: 'networkidle2' });
+    
+    // Scroll para carregar mais leads
+    for(let i=0; i<3; i++) {
+        await page.evaluate(() => document.querySelector('.m6QC6e')?.scrollBy(0, 1000));
+        await new Promise(r => setTimeout(r, 1000));
+    }
 
-    const results = await page.evaluate(() => {
+    const leads = await page.evaluate(() => {
       const items = Array.from(document.querySelectorAll('.Nv2PK'));
       return items.map(item => {
-        const name = item.querySelector('.qBF1Pd')?.innerText || "Sem nome";
+        const name = item.querySelector('.qBF1Pd')?.innerText || "Empresa sem nome";
         const rating = parseFloat((item.querySelector('.MW4etd')?.innerText || "0").replace(',', '.'));
         const reviews = parseInt((item.querySelector('.UY7F9')?.innerText || "0").replace(/\D/g, '')) || 0;
         const website = item.querySelector('a[aria-label*="Website"]')?.href || null;
         const phone = item.innerText.match(/\(?\d{2}\)?\s?\d{4,5}[-.]?\d{4}/)?.[0] || "";
         const category = item.querySelector('.W4Efsd:nth-child(2) span:nth-child(1)')?.innerText || "Geral";
-        return { name, rating, reviews, website, phone, category };
+        const address = item.querySelector('.W4Efsd:nth-child(2) span:nth-child(2) span:nth-child(2)')?.innerText || "";
+        
+        return { name, rating, reviews, website, phone, category, address };
       });
     });
 
-    // Calcula benchmarks
-    const avgRating = results.length > 0 ? results.reduce((acc, l) => acc + l.rating, 0) / results.length : 0;
-    const topCompetitor = [...results].sort((a, b) => b.rating - a.rating)[0];
+    console.log(`🔍 Analisando presença digital de ${leads.length} leads...`);
 
-    console.log(`✅ ${results.length} empresas encontradas. Enviando para Supabase...`);
+    for (let lead of leads) {
+      let techData = { hasPixel: false, hasAds: false, instagram: null };
+      
+      // Se tiver site, tenta detectar se tem Pixel e redes sociais
+      if (lead.website) {
+        try {
+          const sitePage = await browser.newPage();
+          await sitePage.goto(lead.website, { waitUntil: 'domcontentloaded', timeout: 10000 });
+          const content = await sitePage.content();
+          
+          techData.hasPixel = content.includes('fbevents.js') || content.includes('fbq(');
+          techData.hasAds = content.includes('adsbygoogle') || content.includes('gtag(');
+          techData.instagram = content.match(/instagram\.com\/([a-zA-Z0-9_.]+)/)?.[0] || null;
+          
+          await sitePage.close();
+        } catch (e) {
+             console.log(`   ⚠️ Erro ao analisar site de ${lead.name}`);
+        }
+      }
 
-    for (const lead of results) {
+      // Calcula Lead Scoring Avançado
       let score = 0;
       if (!lead.website) score += 40;
-      if (lead.rating < 4.2) score += 30;
-      if (lead.reviews < 20) score += 20;
+      else if (!techData.hasPixel) score += 20; // Tem site mas não faz anúncio
+      
+      if (lead.rating < 4.4) score += 25;
+      if (lead.reviews < 30) score += 15;
       if (lead.phone) score += 10;
 
       const leadObj = {
-        name: lead.name,
-        phone: lead.phone || null,
-        website: lead.website || null,
-        rating: lead.rating,
-        reviews: lead.reviews,
-        category: lead.category,
-        score: score,
+        ...lead,
+        score,
+        has_pixel: techData.hasPixel,
+        has_ads: techData.hasAds,
+        instagram: techData.instagram,
         status: 'Pendente',
-        competitor: topCompetitor?.name || 'Líder Local',
-        competitorRating: topCompetitor?.rating || 4.8,
-        avgRatingNiche: avgRating.toFixed(1),
         lastUpdated: new Date().toISOString()
       };
 
-      const { error } = await supabase.from('leads').upsert(leadObj, { onConflict: 'name' });
-      if (error) console.error(`❌ Erro: ${lead.name} — ${error.message}`);
-      else console.log(`   ✅ ${lead.name} (Score: ${score})`);
+      await supabase.from('leads').upsert(leadObj, { onConflict: 'name' });
+      console.log(`   ✅ Lead processado: ${lead.name} [Score: ${score}]`);
     }
 
-    console.log(`🏁 Varredura completa!`);
+    console.log(`🏁 Missão Cumprida! Base de dados atualizada.`);
   } catch (err) {
-    console.error('Erro na varredura:', err.message);
+    console.error('Erro crítico no robô:', err.message);
   }
 
   await browser.close();
