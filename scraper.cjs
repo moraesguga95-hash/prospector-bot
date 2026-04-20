@@ -6,88 +6,68 @@ const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function scrapeGoogleMaps(query) {
-  console.log(`📡 Operação "God Mode" iniciada: ${query}`);
+  console.log(`📡 SUPER-VARREDURA: ${query}`);
   
   const browser = await puppeteer.launch({ 
     headless: "new", 
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--window-size=1280,800'] 
   });
   
   const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 800 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
   try {
     await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, { waitUntil: 'networkidle2' });
     
-    // Scroll para carregar mais leads
-    for(let i=0; i<3; i++) {
-        await page.evaluate(() => document.querySelector('.m6QC6e')?.scrollBy(0, 1000));
-        await new Promise(r => setTimeout(r, 1000));
+    // Rolagem profunda para carregar tudo
+    for(let i=0; i<5; i++) {
+        await page.evaluate(() => document.querySelector('.m6QC6e')?.scrollBy(0, 1500));
+        await new Promise(r => setTimeout(r, 1500));
     }
 
     const leads = await page.evaluate(() => {
       const items = Array.from(document.querySelectorAll('.Nv2PK'));
       return items.map(item => {
-        const name = item.querySelector('.qBF1Pd')?.innerText || "Empresa sem nome";
+        const name = item.querySelector('.qBF1Pd')?.innerText || "Sem nome";
         const rating = parseFloat((item.querySelector('.MW4etd')?.innerText || "0").replace(',', '.'));
         const reviews = parseInt((item.querySelector('.UY7F9')?.innerText || "0").replace(/\D/g, '')) || 0;
         const website = item.querySelector('a[aria-label*="Website"]')?.href || null;
-        const phone = item.innerText.match(/\(?\d{2}\)?\s?\d{4,5}[-.]?\d{4}/)?.[0] || "";
         const category = item.querySelector('.W4Efsd:nth-child(2) span:nth-child(1)')?.innerText || "Geral";
-        const address = item.querySelector('.W4Efsd:nth-child(2) span:nth-child(2) span:nth-child(2)')?.innerText || "";
         
-        return { name, rating, reviews, website, phone, category, address };
+        // Busca Telefone de múltiplas formas (Regex melhorado)
+        const textContent = item.innerText;
+        const phoneRegex = /(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?(?:9\s?)?\d{4}[-\.\s]?\d{4}/g;
+        const phones = textContent.match(phoneRegex);
+        const phone = phones ? phones[0].trim() : "";
+        
+        return { name, rating, reviews, website, phone, category };
       });
     });
 
-    console.log(`🔍 Analisando presença digital de ${leads.length} leads...`);
+    console.log(`🔍 Processando ${leads.length} leads encontrados...`);
 
     for (let lead of leads) {
-      let techData = { hasPixel: false, hasAds: false, instagram: null };
-      
-      // Se tiver site, tenta detectar se tem Pixel e redes sociais
-      if (lead.website) {
-        try {
-          const sitePage = await browser.newPage();
-          await sitePage.goto(lead.website, { waitUntil: 'domcontentloaded', timeout: 10000 });
-          const content = await sitePage.content();
-          
-          techData.hasPixel = content.includes('fbevents.js') || content.includes('fbq(');
-          techData.hasAds = content.includes('adsbygoogle') || content.includes('gtag(');
-          techData.instagram = content.match(/instagram\.com\/([a-zA-Z0-9_.]+)/)?.[0] || null;
-          
-          await sitePage.close();
-        } catch (e) {
-             console.log(`   ⚠️ Erro ao analisar site de ${lead.name}`);
-        }
-      }
+      if (lead.name === "Sem nome") continue;
 
-      // Calcula Lead Scoring Avançado
       let score = 0;
       if (!lead.website) score += 40;
-      else if (!techData.hasPixel) score += 20; // Tem site mas não faz anúncio
-      
-      if (lead.rating < 4.4) score += 25;
-      if (lead.reviews < 30) score += 15;
+      if (lead.rating < 4.3) score += 30;
+      if (lead.reviews < 20) score += 20;
       if (lead.phone) score += 10;
 
-      const leadObj = {
+      await supabase.from('leads').upsert({
         ...lead,
         score,
-        has_pixel: techData.hasPixel,
-        has_ads: techData.hasAds,
-        instagram: techData.instagram,
         status: 'Pendente',
         lastUpdated: new Date().toISOString()
-      };
-
-      await supabase.from('leads').upsert(leadObj, { onConflict: 'name' });
-      console.log(`   ✅ Lead processado: ${lead.name} [Score: ${score}]`);
+      }, { onConflict: 'name' });
+      
+      console.log(`✅ Salvo: ${lead.name} | Tel: ${lead.phone || 'Nao encontrado'}`);
     }
 
-    console.log(`🏁 Missão Cumprida! Base de dados atualizada.`);
+    console.log(`🏁 Varredura finalizada.`);
   } catch (err) {
-    console.error('Erro crítico no robô:', err.message);
+    console.error('Erro:', err.message);
   }
 
   await browser.close();
